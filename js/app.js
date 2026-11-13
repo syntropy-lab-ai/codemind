@@ -1,6 +1,5 @@
 /**
  * app.js — главный модуль приложения CodeMind
- * Инициализирует приложение и оркестрирует все операции поиска
  */
 
 import { fetchRepos, fetchCodeFiles, fetchFileContent } from './github.js';
@@ -11,9 +10,6 @@ import { showProgress, hideProgress, displayResults, showError } from './ui.js';
 
 const STORAGE_KEY = 'github_token';
 
-/**
- * Инициализация приложения при загрузке страницы
- */
 export function init() {
   const savedToken = localStorage.getItem(STORAGE_KEY);
   if (savedToken) {
@@ -24,19 +20,14 @@ export function init() {
   const searchBtn = document.getElementById('search-btn');
   if (searchBtn) searchBtn.addEventListener('click', handleSearch);
 
-  const inputs = document.querySelectorAll('input');
-  inputs.forEach(input => {
+  document.querySelectorAll('input').forEach(input => {
     input.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') handleSearch();
     });
   });
-
   console.log('CodeMind инициализирован');
 }
 
-/**
- * Главный обработчик поиска
- */
 export async function handleSearch() {
   const usernameInput = document.getElementById('username');
   const tokenInput = document.getElementById('token');
@@ -44,7 +35,7 @@ export async function handleSearch() {
   const searchBtn = document.getElementById('search-btn');
 
   if (!usernameInput || !tokenInput || !queryInput || !searchBtn) {
-    showError('Не найдены элементы интерфейса');
+    showError('Ошибка интерфейса: не найдены элементы формы');
     return;
   }
 
@@ -72,21 +63,20 @@ export async function handleSearch() {
     }
 
     const allCachedData = [];
-    const totalRepos = repos.length;
-
-    for (let i = 0; i < totalRepos; i++) {
+    
+    for (let i = 0; i < repos.length; i++) {
       const repo = repos[i];
       const repoName = repo.name;
-      const defaultBranch = repo.default_branch || 'main';
+      const branch = repo.default_branch || 'main';
 
-      showProgress(i + 1, totalRepos, `Обработка репозитория: ${repoName}`);
+      showProgress(i + 1, repos.length, `Обработка: ${repoName}`);
 
       try {
         const cacheKey = `${username}/${repoName}`;
         const cached = await getEmbeddings(cacheKey);
         if (cached) { allCachedData.push(cached); continue; }
 
-        const files = await fetchCodeFiles(username, repoName, defaultBranch, token);
+        const files = await fetchCodeFiles(username, repoName, branch, token);
         if (files.length === 0) continue;
 
         const fileData = [];
@@ -95,8 +85,8 @@ export async function handleSearch() {
             const content = await fetchFileContent(username, repoName, file.path, token);
             const blocks = extractCodeBlocks(content, detectLanguage(file.path));
             if (blocks.length > 0) fileData.push({ path: file.path, blocks });
-          } catch (error) {
-            console.warn(`Ошибка чтения файла ${file.path}:`, error.message);
+          } catch (err) {
+            console.warn(`Пропуск ${file.path}:`, err.message);
           }
         }
 
@@ -105,29 +95,27 @@ export async function handleSearch() {
         const allBlocks = fileData.flatMap(f => f.blocks);
         const texts = allBlocks.map(b => b.code);
 
-        showProgress(0, texts.length, `Получение эмбеддингов для ${repoName}...`);
+        showProgress(0, texts.length, `Эмбеддинги: ${repoName}`);
         const embeddings = await getEmbeddingsBatch(texts, (current, total) => {
           showProgress(current, total, `Эмбеддинги: ${repoName} (${current}/${total})`);
         });
 
-        let blockIndex = 0;
+        let idx = 0;
         for (const file of fileData) {
           for (const block of file.blocks) {
-            block.embedding = embeddings[blockIndex];
-            blockIndex++;
+            block.embedding = embeddings[idx++];
           }
         }
 
-        const cacheData = { repo: `${username}/${repoName}`, files: fileData };
-        await saveEmbeddings(cacheKey, cacheData);
-        allCachedData.push(cacheData);
+        await saveEmbeddings(cacheKey, { repo: `${username}/${repoName}`, files: fileData });
+        allCachedData.push({ repo: `${username}/${repoName}`, files: fileData });
 
-      } catch (error) {
-        console.warn(`Ошибка обработки репозитория ${repoName}:`, error.message);
+      } catch (err) {
+        console.warn(`Ошибка репозитория ${repoName}:`, err.message);
       }
     }
 
-    showProgress(0, 1, 'Анализ поискового запроса...');
+    showProgress(0, 1, 'Анализ запроса...');
     const queryEmbedding = await getEmbedding(query);
 
     showProgress(0, 1, 'Поиск результатов...');
@@ -135,38 +123,28 @@ export async function handleSearch() {
 
     hideProgress();
     displayResults(results);
-    if (results.length === 0) showError('Ничего не найдено. Попробуйте изменить запрос.');
+    if (results.length === 0) showError('Ничего не найдено. Измените запрос.');
 
   } catch (error) {
-    console.error('Ошибка поиска:', error);
-    showError(error.message || 'Произошла непредвиденная ошибка');
+    console.error('Критическая ошибка:', error);
+    showError(error.message || 'Непредвиденная ошибка');
     hideProgress();
   } finally {
     searchBtn.disabled = false;
-    searchBtn.innerHTML = `
-      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-      </svg>
-      Найти
-    `;
+    searchBtn.innerHTML = `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg> Найти`;
   }
 }
 
-/**
- * Определить язык программирования по расширению файла
- */
 function detectLanguage(path) {
   const ext = path.split('.').pop().toLowerCase();
   const map = {
     js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
     py: 'python', java: 'java', cpp: 'cpp', c: 'c', h: 'c', cs: 'csharp',
-    go: 'go', rs: 'rust', rb: 'ruby', php: 'php', swift: 'swift', kt: 'kotlin',
-    scala: 'scala', r: 'r', m: 'objectivec', mm: 'objectivec', html: 'html',
-    css: 'css', scss: 'scss', less: 'less', vue: 'html', sh: 'bash',
-    bash: 'bash', zsh: 'bash', sql: 'sql', md: 'markdown'
+    go: 'go', rs: 'rust', rb: 'ruby', php: 'php', html: 'html', css: 'css',
+    json: 'json', md: 'markdown', sh: 'bash', sql: 'sql'
   };
-  return map[ext] || 'javascript';
+  return map[ext] || 'plaintext';
 }
 
-// Запуск инициализации
+// Точка входа
 init();
