@@ -106,15 +106,25 @@ CodeMind — open-source веб-приложение, которое ищет к
 ### Структура проекта
 
 codemind/
+
 ├── index.html # UI, подключение Tailwind/Highlight.js/Transformers.js
+
 ├── css/style.css # кастомные стили (прогресс-бар, анимации, тосты)
+
 ├── js/
+
 │ ├── app.js # оркестратор: init(), handleSearch(), версия кеша
+
 │ ├── github.js # GitHub API: репозитории, дерево файлов, содержимое
+
 │ ├── embeddings.js # Transformers.js + cleanCode + fallback-хешер
+
 │ ├── cache.js # IndexedDB (TTL 7 дней)
+
 │ ├── search.js # косинусное сходство + буст по имени
+
 │ └── ui.js # прогресс-бар, результаты, тосты
+
 └── README.md
 
 
