@@ -5,8 +5,8 @@
 
 import { fetchRepos, fetchCodeFiles, fetchFileContent } from './github.js';
 import { getEmbedding, getEmbeddingsBatch, extractCodeBlocks } from './embeddings.js';
-import { saveEmbeddings, getEmbeddings, clearCache } from './cache.js';
-import { cosineSimilarity, search } from './search.js';
+import { saveEmbeddings, getEmbeddings } from './cache.js';
+import { search } from './search.js';
 import { showProgress, hideProgress, displayResults, showError } from './ui.js';
 
 const STORAGE_KEY = 'github_token';
@@ -15,28 +15,19 @@ const STORAGE_KEY = 'github_token';
  * Инициализация приложения при загрузке страницы
  */
 export function init() {
-  // Загружаем сохранённый токен из localStorage
   const savedToken = localStorage.getItem(STORAGE_KEY);
   if (savedToken) {
     const tokenInput = document.getElementById('token');
-    if (tokenInput) {
-      tokenInput.value = savedToken;
-    }
+    if (tokenInput) tokenInput.value = savedToken;
   }
 
-  // Привязываем обработчик кнопки поиска
   const searchBtn = document.getElementById('search-btn');
-  if (searchBtn) {
-    searchBtn.addEventListener('click', handleSearch);
-  }
+  if (searchBtn) searchBtn.addEventListener('click', handleSearch);
 
-  // Обработка Enter в полях ввода
   const inputs = document.querySelectorAll('input');
   inputs.forEach(input => {
     input.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') {
-        handleSearch();
-      }
+      if (e.key === 'Enter') handleSearch();
     });
   });
 
@@ -45,7 +36,6 @@ export function init() {
 
 /**
  * Главный обработчик поиска
- * Оркестрирует весь процесс: GitHub API → эмбеддинги → поиск → отображение
  */
 export async function handleSearch() {
   const usernameInput = document.getElementById('username');
@@ -54,7 +44,7 @@ export async function handleSearch() {
   const searchBtn = document.getElementById('search-btn');
 
   if (!usernameInput || !tokenInput || !queryInput || !searchBtn) {
-    showError('Не найдены необходимые элементы интерфейса');
+    showError('Не найдены элементы интерфейса');
     return;
   }
 
@@ -62,30 +52,16 @@ export async function handleSearch() {
   const token = tokenInput.value.trim() || null;
   const query = queryInput.value.trim();
 
-  // Валидация
-  if (!username) {
-    showError('Введите GitHub username');
-    return;
-  }
+  if (!username) { showError('Введите GitHub username'); return; }
+  if (!query) { showError('Введите поисковый запрос'); return; }
 
-  if (!query) {
-    showError('Введите поисковый запрос');
-    return;
-  }
+  if (token) localStorage.setItem(STORAGE_KEY, token);
+  else localStorage.removeItem(STORAGE_KEY);
 
-  // Сохраняем токен в localStorage (если введён)
-  if (token) {
-    localStorage.setItem(STORAGE_KEY, token);
-  } else {
-    localStorage.removeItem(STORAGE_KEY);
-  }
-
-  // Блокируем кнопку на время поиска
   searchBtn.disabled = true;
   searchBtn.textContent = 'Поиск...';
 
   try {
-    // Шаг 1: Получаем список репозиториев
     showProgress(0, 1, 'Получение списка репозиториев...');
     const repos = await fetchRepos(username, token);
 
@@ -95,9 +71,6 @@ export async function handleSearch() {
       return;
     }
 
-    console.log(`Найдено ${repos.length} репозиториев`);
-
-    // Шаг 2: Для каждого репозитория получаем файлы и эмбеддинги
     const allCachedData = [];
     const totalRepos = repos.length;
 
@@ -109,63 +82,34 @@ export async function handleSearch() {
       showProgress(i + 1, totalRepos, `Обработка репозитория: ${repoName}`);
 
       try {
-        // Проверяем кеш
         const cacheKey = `${username}/${repoName}`;
         const cached = await getEmbeddings(cacheKey);
+        if (cached) { allCachedData.push(cached); continue; }
 
-        if (cached) {
-          console.log(`Используем кеш для ${repoName}`);
-          allCachedData.push(cached);
-          continue;
-        }
-
-        // Получаем список файлов кода
         const files = await fetchCodeFiles(username, repoName, defaultBranch, token);
+        if (files.length === 0) continue;
 
-        if (files.length === 0) {
-          console.log(`В ${repoName} нет файлов кода`);
-          continue;
-        }
-
-        console.log(`В ${repoName} найдено ${files.length} файлов кода`);
-
-        // Для каждого файла получаем содержимое и извлекаем блоки кода
         const fileData = [];
-        const totalFiles = files.length;
-
-        for (let j = 0; j < totalFiles; j++) {
-          const file = files[j];
-
+        for (const file of files) {
           try {
             const content = await fetchFileContent(username, repoName, file.path, token);
             const blocks = extractCodeBlocks(content, detectLanguage(file.path));
-
-            if (blocks.length > 0) {
-              fileData.push({
-                path: file.path,
-                blocks
-              });
-            }
+            if (blocks.length > 0) fileData.push({ path: file.path, blocks });
           } catch (error) {
             console.warn(`Ошибка чтения файла ${file.path}:`, error.message);
           }
         }
 
-        if (fileData.length === 0) {
-          continue;
-        }
+        if (fileData.length === 0) continue;
 
-        // Получаем эмбеддинги для всех блоков кода
         const allBlocks = fileData.flatMap(f => f.blocks);
         const texts = allBlocks.map(b => b.code);
 
         showProgress(0, texts.length, `Получение эмбеддингов для ${repoName}...`);
-
         const embeddings = await getEmbeddingsBatch(texts, (current, total) => {
           showProgress(current, total, `Эмбеддинги: ${repoName} (${current}/${total})`);
         });
 
-        // Привязываем эмбеддинги к блокам
         let blockIndex = 0;
         for (const file of fileData) {
           for (const block of file.blocks) {
@@ -174,12 +118,7 @@ export async function handleSearch() {
           }
         }
 
-        // Сохраняем в кеш
-        const cacheData = {
-          repo: `${username}/${repoName}`,
-          files: fileData
-        };
-
+        const cacheData = { repo: `${username}/${repoName}`, files: fileData };
         await saveEmbeddings(cacheKey, cacheData);
         allCachedData.push(cacheData);
 
@@ -188,6 +127,46 @@ export async function handleSearch() {
       }
     }
 
-    // Шаг 3: Получаем эмбеддинг для поискового запроса
     showProgress(0, 1, 'Анализ поискового запроса...');
-    const
+    const queryEmbedding = await getEmbedding(query);
+
+    showProgress(0, 1, 'Поиск результатов...');
+    const results = search(queryEmbedding, allCachedData, 20);
+
+    hideProgress();
+    displayResults(results);
+    if (results.length === 0) showError('Ничего не найдено. Попробуйте изменить запрос.');
+
+  } catch (error) {
+    console.error('Ошибка поиска:', error);
+    showError(error.message || 'Произошла непредвиденная ошибка');
+    hideProgress();
+  } finally {
+    searchBtn.disabled = false;
+    searchBtn.innerHTML = `
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+      </svg>
+      Найти
+    `;
+  }
+}
+
+/**
+ * Определить язык программирования по расширению файла
+ */
+function detectLanguage(path) {
+  const ext = path.split('.').pop().toLowerCase();
+  const map = {
+    js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
+    py: 'python', java: 'java', cpp: 'cpp', c: 'c', h: 'c', cs: 'csharp',
+    go: 'go', rs: 'rust', rb: 'ruby', php: 'php', swift: 'swift', kt: 'kotlin',
+    scala: 'scala', r: 'r', m: 'objectivec', mm: 'objectivec', html: 'html',
+    css: 'css', scss: 'scss', less: 'less', vue: 'html', sh: 'bash',
+    bash: 'bash', zsh: 'bash', sql: 'sql', md: 'markdown'
+  };
+  return map[ext] || 'javascript';
+}
+
+// Запуск инициализации
+init();
