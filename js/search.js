@@ -1,85 +1,74 @@
 /**
- * search.js — модуль для семантического поиска по векторам
- * Вычисляет косинусное сходство и ранжирует результаты
+ * search.js — модуль для семантического поиска по векторам.
+ * Вычисляет косинусное сходство, добавляет буст по имени и ранжирует результаты.
  */
 
 /**
- * Вычислить косинусное сходство между двумя векторами
- * @param {number[]} vec1 — первый вектор
- * @param {number[]} vec2 — второй вектор
- * @returns {number} — значение сходства от -1 до 1
+ * Косинусное сходство между двумя векторами.
+ * @param {number[]} vec1
+ * @param {number[]} vec2
+ * @returns {number}
  */
 export function cosineSimilarity(vec1, vec2) {
-  if (!vec1 || !vec2 || vec1.length !== vec2.length) {
-    return 0;
-  }
-
-  let dotProduct = 0;
-  let magnitude1 = 0;
-  let magnitude2 = 0;
-
+  if (!vec1 || !vec2 || vec1.length !== vec2.length) return 0;
+  let dot = 0, m1 = 0, m2 = 0;
   for (let i = 0; i < vec1.length; i++) {
-    dotProduct += vec1[i] * vec2[i];
-    magnitude1 += vec1[i] * vec1[i];
-    magnitude2 += vec2[i] * vec2[i];
+    dot += vec1[i] * vec2[i];
+    m1 += vec1[i] * vec1[i];
+    m2 += vec2[i] * vec2[i];
   }
-
-  magnitude1 = Math.sqrt(magnitude1);
-  magnitude2 = Math.sqrt(magnitude2);
-
-  if (magnitude1 === 0 || magnitude2 === 0) {
-    return 0;
-  }
-
-  return dotProduct / (magnitude1 * magnitude2);
+  m1 = Math.sqrt(m1); m2 = Math.sqrt(m2);
+  if (m1 === 0 || m2 === 0) return 0;
+  return dot / (m1 * m2);
 }
 
 /**
- * Найти наиболее релевантные фрагменты кода
- * @param {number[]} queryEmbedding — вектор поискового запроса
- * @param {Array} cachedEmbeddings — массив кешированных данных [{repo, files: [{path, blocks: [{name, code, embedding}]}]}]
- * @param {number} topK — количество лучших результатов (по умолчанию 20)
- * @returns {Array} — отсортированный массив результатов
+ * Простая токенизация запроса (латиница + кириллица).
+ * @param {string} text
+ * @returns {string[]}
  */
-export function search(queryEmbedding, cachedEmbeddings, topK = 20) {
+function tokenizeQuery(text) {
+  if (!text) return [];
+  return text.toLowerCase().replace(/[^a-zа-яё0-9]+/g, ' ').split(/\s+/).filter(t => t.length >= 3);
+}
+
+/**
+ * Найти наиболее релевантные фрагменты кода.
+ * @param {number[]} queryEmbedding
+ * @param {Array} cachedEmbeddings
+ * @param {string} queryText — исходный запрос для буста по имени
+ * @param {number} topK
+ * @returns {Array}
+ */
+export function search(queryEmbedding, cachedEmbeddings, queryText = '', topK = 20) {
   const results = [];
+  if (!cachedEmbeddings || cachedEmbeddings.length === 0) return results;
+  const qTokens = tokenizeQuery(queryText);
 
-  if (!cachedEmbeddings || cachedEmbeddings.length === 0) {
-    return results;
-  }
-
-  // Проходим по всем репозиториям и файлам в кеше
   for (const repoData of cachedEmbeddings) {
     const { repo, files } = repoData;
-
     if (!files || !Array.isArray(files)) continue;
-
     for (const file of files) {
       const { path, blocks } = file;
-
       if (!blocks || !Array.isArray(blocks)) continue;
-
       for (const block of blocks) {
         const { name, code, embedding } = block;
-
         if (!embedding) continue;
+        let sim = cosineSimilarity(queryEmbedding, embedding);
 
-        const similarity = cosineSimilarity(queryEmbedding, embedding);
+        // Буст по имени функции/файла (полезно для англ. запросов)
+        if (qTokens.length > 0) {
+          const hay = `${name || ''} ${path || ''}`.toLowerCase();
+          let matches = 0;
+          for (const t of qTokens) { if (hay.includes(t)) matches++; }
+          if (matches > 0) sim = Math.min(1, sim + 0.06 * matches);
+        }
 
-        results.push({
-          repo,
-          path,
-          functionName: name,
-          code,
-          similarity
-        });
+        results.push({ repo, path, functionName: name, code, similarity: sim });
       }
     }
   }
 
-  // Сортируем по убыванию сходства
   results.sort((a, b) => b.similarity - a.similarity);
-
-  // Возвращаем топ-K результатов
   return results.slice(0, topK);
 }
