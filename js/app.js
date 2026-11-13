@@ -10,7 +10,7 @@ import { search } from './search.js';
 import { showProgress, hideProgress, displayResults, showError } from './ui.js';
 
 const STORAGE_KEY = 'github_token';
-const CACHE_VERSION = 'v2'; // смена версии сбрасывает старый кеш автоматически
+const CACHE_VERSION = 'v3'; // смена версии сбрасывает старый кеш автоматически
 
 export function init() {
   const savedToken = localStorage.getItem(STORAGE_KEY);
