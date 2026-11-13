@@ -1,19 +1,17 @@
 /**
- * app.js — главный модуль приложения CodeMind
- * Инициализирует приложение и оркестрирует все операции поиска
+ * app.js — главный модуль приложения CodeMind.
+ * Инициализирует приложение и оркестрирует операции поиска.
  */
 
 import { fetchRepos, fetchCodeFiles, fetchFileContent } from './github.js';
-import { getEmbedding, getEmbeddingsBatch, extractCodeBlocks, warmup, getMode } from './embeddings.js';
-import { saveEmbeddings, getEmbeddings } from './cache.js';
+import { getEmbedding, getEmbeddingsBatch, extractCodeBlocks, cleanCode, buildPrompt, warmup, getMode } from './embeddings.js';
+import { saveEmbeddings, getEmbeddings, clearCache } from './cache.js';
 import { search } from './search.js';
 import { showProgress, hideProgress, displayResults, showError } from './ui.js';
 
 const STORAGE_KEY = 'github_token';
+const CACHE_VERSION = 'v2'; // смена версии сбрасывает старый кеш автоматически
 
-/**
- * Инициализация приложения при загрузке страницы
- */
 export function init() {
   const savedToken = localStorage.getItem(STORAGE_KEY);
   if (savedToken) {
@@ -24,18 +22,25 @@ export function init() {
   const searchBtn = document.getElementById('search-btn');
   if (searchBtn) searchBtn.addEventListener('click', handleSearch);
 
+  const clearBtn = document.getElementById('clear-cache-btn');
+  if (clearBtn) clearBtn.addEventListener('click', handleClearCache);
+
   document.querySelectorAll('input').forEach(input => {
-    input.addEventListener('keypress', (e) => {
-      if (e.key === 'Enter') handleSearch();
-    });
+    input.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleSearch(); });
   });
 
   console.log('CodeMind инициализирован');
 }
 
-/**
- * Главный обработчик поиска
- */
+async function handleClearCache() {
+  try {
+    await clearCache();
+    showError('Кеш очищен. Следующий поиск пересчитает эмбеддинги заново.');
+  } catch (err) {
+    showError('Не удалось очистить кеш: ' + err.message);
+  }
+}
+
 export async function handleSearch() {
   const usernameInput = document.getElementById('username');
   const tokenInput = document.getElementById('token');
@@ -43,8 +48,7 @@ export async function handleSearch() {
   const searchBtn = document.getElementById('search-btn');
 
   if (!usernameInput || !tokenInput || !queryInput || !searchBtn) {
-    showError('Не найдены необходимые элементы интерфейса');
-    return;
+    showError('Не найдены необходимые элементы интерфейса'); return;
   }
 
   const username = usernameInput.value.trim();
@@ -61,7 +65,6 @@ export async function handleSearch() {
   searchBtn.innerHTML = `<svg class="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Анализ...`;
 
   try {
-    // Прогрев модели (первый запуск может скачать ~22MB и занять время)
     showProgress(0, 1, 'Загрузка модели анализа кода...');
     await warmup();
     updateModeIndicator();
@@ -71,8 +74,7 @@ export async function handleSearch() {
 
     if (repos.length === 0) {
       showError(`У пользователя "${username}" нет репозиториев`);
-      hideProgress();
-      return;
+      hideProgress(); return;
     }
 
     const allCachedData = [];
@@ -86,12 +88,9 @@ export async function handleSearch() {
       showProgress(i + 1, totalRepos, `Обработка репозитория: ${repoName}`);
 
       try {
-        const cacheKey = `${username}/${repoName}`;
+        const cacheKey = `${CACHE_VERSION}:${username}/${repoName}`;
         const cached = await getEmbeddings(cacheKey);
-        if (cached) {
-          allCachedData.push(cached);
-          continue;
-        }
+        if (cached) { allCachedData.push(cached); continue; }
 
         const files = await fetchCodeFiles(username, repoName, defaultBranch, token);
         if (files.length === 0) continue;
@@ -110,7 +109,8 @@ export async function handleSearch() {
         if (fileData.length === 0) continue;
 
         const allBlocks = fileData.flatMap(f => f.blocks);
-        const texts = allBlocks.map(b => b.code);
+        // Ключевое улучшение: текст для модели = имя + очищенный код (без строковых литералов)
+        const texts = allBlocks.map(b => buildPrompt(b.name, cleanCode(b.code)));
 
         showProgress(0, texts.length, `Получение эмбеддингов для ${repoName}...`);
         const embeddings = await getEmbeddingsBatch(texts, (current, total) => {
@@ -135,16 +135,15 @@ export async function handleSearch() {
     }
 
     if (allCachedData.length === 0) {
-      showError('Не удалось проанализировать ни один репозиторий. Добавьте GitHub Token для увеличения лимитов API.');
-      hideProgress();
-      return;
+      showError('Не удалось проанализировать ни один репозиторий. Добавьте classic-токен GitHub со scope repo.');
+      hideProgress(); return;
     }
 
     showProgress(0, 1, 'Анализ поискового запроса...');
     const queryEmbedding = await getEmbedding(query);
 
     showProgress(0, 1, 'Поиск результатов...');
-    const results = search(queryEmbedding, allCachedData, 20);
+    const results = search(queryEmbedding, allCachedData, query, 20);
 
     hideProgress();
     displayResults(results);
@@ -157,9 +156,9 @@ export async function handleSearch() {
     console.error('Критическая ошибка поиска:', error);
     const msg = (error.message || '').toLowerCase();
     if (msg.includes('failed to fetch') || msg.includes('name_not_resolved') || msg.includes('network')) {
-      showError('Ошибка сети: не удалось загрузить модель анализа. Попробуйте отключить блокировщик рекламы и повторить.');
+      showError('Ошибка сети: не удалось загрузить модель. Отключите блокировщик рекламы и повторите.');
     } else if (msg.includes('403') || msg.includes('429') || msg.includes('лимит')) {
-      showError('Превышен лимит запросов GitHub. Введите GitHub Token в поле выше.');
+      showError('Превышен лимит запросов GitHub. Используйте classic-токен со scope repo.');
     } else {
       showError(error.message || 'Произошла непредвиденная ошибка');
     }
@@ -175,9 +174,6 @@ export async function handleSearch() {
   }
 }
 
-/**
- * Показать в интерфейсе, каким режимом работает поиск
- */
 function updateModeIndicator() {
   const el = document.getElementById('mode-indicator');
   if (!el) return;
@@ -187,9 +183,6 @@ function updateModeIndicator() {
   else el.textContent = '';
 }
 
-/**
- * Определить язык программирования по расширению файла
- */
 function detectLanguage(path) {
   const ext = path.split('.').pop().toLowerCase();
   const map = {
@@ -201,5 +194,4 @@ function detectLanguage(path) {
   return map[ext] || 'javascript';
 }
 
-// Запускаем инициализацию при загрузке страницы
 init();
