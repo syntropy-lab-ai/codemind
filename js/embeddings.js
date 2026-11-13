@@ -23,7 +23,7 @@ async function loadTransformers() {
     const { pipeline, env } = mod;
     env.allowLocalModels = false;
     env.useBrowserCache = true;
-    const ex = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { quantized: true });
+    const ex = await pipeline('feature-extraction', 'Xenova/paraphrase-multilingual-MiniLM-L12-v2', { quantized: true });
     return ex;
   } catch (err) {
     console.warn('Transformers.js недоступен, fallback:', err.message);
